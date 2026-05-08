@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional
 
 
@@ -11,7 +11,7 @@ class AttachmentInfo(BaseModel):
 
 class EmailAnalysisRequest(BaseModel):
     subject: str = Field(..., max_length=1000)
-    sender_email: str
+    sender_email: EmailStr
     body: str = Field(..., max_length=100_000)
     headers: Optional[dict] = None
     attachments: Optional[List[AttachmentInfo]] = None

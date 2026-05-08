@@ -3,7 +3,14 @@ from urllib.parse import urlparse
 
 from app.analyzers.base import AnalysisResult, BaseAnalyzer
 from app.schemas import EmailAnalysisRequest
+from app.services.http_client import get_http_client
 
+
+# Known URL shortener domains
+SHORTENER_DOMAINS = {
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd",
+    "buff.ly", "short.io", "rebrand.ly", "cutt.ly", "rb.gy",
+}
 
 PROTECTED_BRANDS = [
     "google", "gmail", "microsoft", "outlook", "office 365", "apple", "icloud",
@@ -33,9 +40,15 @@ class UrlAnalyzer(BaseAnalyzer):
         if not urls:
             return result
 
+        # Resolve shortened URLs to their final destination
+        resolved_urls = []
+        for url in urls:
+            resolved = await self._resolve_shortened_url(url)
+            resolved_urls.append(resolved)
+
         flagged_brands: set[str] = set()
 
-        for url in urls:
+        for url in resolved_urls:
             try:
                 parsed = urlparse(url)
                 netloc = (parsed.netloc or parsed.path).lower()
@@ -62,3 +75,19 @@ class UrlAnalyzer(BaseAnalyzer):
                 continue
 
         return result
+
+    @staticmethod
+    async def _resolve_shortened_url(url: str) -> str:
+        """Resolve URL shorteners (bit.ly, tinyurl, etc.) to final destination."""
+        try:
+            parsed = urlparse(url)
+            domain = (parsed.netloc or parsed.path.split("/")[0]).lower()
+
+            if domain not in SHORTENER_DOMAINS:
+                return url
+
+            client = await get_http_client()
+            response = await client.head(url, follow_redirects=True)
+            return str(response.url)
+        except Exception:
+            return url  # On failure, analyze the original URL

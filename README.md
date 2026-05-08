@@ -31,7 +31,7 @@ Gmail Add-on (Google Apps Script)
 │   External APIs:                        │
 │     • VirusTotal (domain + file hash)   │
 │     • WhoisXMLAPI (fallback for age)    │
-│     • OpenAI (content analysis)         │
+│     • Google Gemini (content analysis)  │
 └─────────────────────────────────────────┘
 ```
 
@@ -50,7 +50,7 @@ Gmail Add-on (Google Apps Script)
 | **Domain Reputation** | VirusTotal flags + domain age | Flagged domains or domains <30 days old score high |
 | **Intent** | Phishing phrase patterns in subject/body | Urgency, fear, financial bait, authority impersonation |
 | **URL Analysis** | Brand impersonation in embedded links | Links mimicking Google, PayPal, banks, etc. |
-| **AI Content** | LLM-based semantic analysis (GPT-4o-mini) | Catches sophisticated social engineering that keywords miss |
+| **AI Content** | LLM-based semantic analysis (Gemini 2.0 Flash) | Catches sophisticated social engineering that keywords miss |
 | **Attachment** | File extension risk + VirusTotal hash lookup | Executables, macro-enabled docs, unknown file hashes |
 
 ### Scoring Logic
@@ -71,7 +71,7 @@ Weights are configurable via environment variables without code changes.
 Every analyzer implements `BaseAnalyzer.analyze()` and returns an `AnalysisResult`. Adding a new analyzer requires: (1) create the file, (2) add it to the list in `main.py`. No other code changes. This was chosen over a monolithic scoring function for testability and clarity.
 
 ### AI as complement, not replacement
-The AI analyzer runs alongside deterministic checks, not instead of them. If the OpenAI API is down or the key isn't configured, the system still functions with 5 other analyzers. The LLM catches what regex cannot (novel phrasing, contextual manipulation), while keyword detection catches what the LLM might hallucinate past.
+The AI analyzer runs alongside deterministic checks, not instead of them. If the Gemini API is down or the key isn't configured, the system still functions with 5 other analyzers. The LLM catches what regex cannot (novel phrasing, contextual manipulation), while keyword detection catches what the LLM might hallucinate past.
 
 ### WHOIS as fallback only
 Domain age is available from VirusTotal's response for free. WHOIS is only queried when VirusTotal doesn't have the creation date — saving API quota and reducing latency.
@@ -86,12 +86,15 @@ Sandboxing (detonating attachments) is out of scope for this project. Instead, w
 
 ## Security Considerations
 
-- **Input validation**: Pydantic enforces field types, max lengths (subject: 1000 chars, body: 100KB), and required fields. Malformed requests are rejected before reaching any analyzer.
+- **Input validation**: Pydantic enforces field types, max lengths (subject: 1000 chars, body: 100KB), email format validation (`EmailStr`), and required fields. Malformed requests are rejected before reaching any analyzer.
+- **API authentication**: The `/analyze` endpoint supports an `X-API-Key` header. When `API_SECRET_KEY` is configured, only requests with the matching key are accepted.
+- **Rate limiting**: Built-in sliding-window rate limiter (default: 10 requests/minute per IP) prevents abuse and protects downstream API quotas.
 - **No secrets in client code**: All API keys live in the backend's `.env` file. The Gmail Add-on has no access to them.
 - **Untrusted input handling**: Email bodies are treated as untrusted. No `eval()`, no template rendering, no shell execution on user-supplied content.
-- **LLM prompt injection mitigation**: The AI analyzer sends email content as a user message, separated from the system prompt. The system prompt requests only structured JSON output — no tool calls or code execution.
+- **LLM prompt injection mitigation**: The AI analyzer sends email content as a user message, separated from the system prompt. The system prompt requests only structured JSON output — no tool calls or code execution. Response is validated (must be int 0-100) before use.
 - **External API errors don't crash the system**: Each analyzer catches exceptions independently. A VirusTotal timeout doesn't prevent the authentication check from completing.
 - **No raw file transfer**: Attachments are identified by SHA-256 hash only. The backend never handles file bytes.
+- **Graceful HTTP client lifecycle**: Connection pool is properly closed on server shutdown via FastAPI lifespan.
 
 ---
 
@@ -102,7 +105,7 @@ Sandboxing (detonating attachments) is out of scope for this project. Instead, w
 - Python 3.11+
 - API keys (all optional — analyzers gracefully skip if their key is missing):
   - [VirusTotal](https://www.virustotal.com/gui/join-us) (free tier: 4 requests/min)
-  - [OpenAI](https://platform.openai.com/api-keys) (for AI content analysis)
+  - [Google AI Studio](https://aistudio.google.com/apikey) (for Gemini AI content analysis)
   - [WhoisXMLAPI](https://whois.whoisxmlapi.com/) (optional fallback)
 
 ### Setup
@@ -138,6 +141,7 @@ Copy the ngrok HTTPS URL and set it as `BACKEND_URL` in the Google Apps Script.
 ```bash
 curl -X POST http://localhost:8000/analyze \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key" \
   -d '{
     "subject": "URGENT: Verify your account now",
     "sender_email": "security@g00gle-alerts.xyz",
@@ -153,8 +157,11 @@ curl -X POST http://localhost:8000/analyze \
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `VT_API_KEY` | No | VirusTotal API key |
-| `OPENAI_API_KEY` | No | OpenAI API key for AI content analysis |
+| `GEMINI_API_KEY` | No | Google Gemini API key for AI content analysis |
 | `WHOIS_API_KEY` | No | WhoisXMLAPI key (fallback for domain age) |
+| `API_SECRET_KEY` | No | Shared secret for `X-API-Key` authentication |
+| `RATE_LIMIT_REQUESTS` | No | Max requests per window (default: 10) |
+| `RATE_LIMIT_WINDOW_SECONDS` | No | Rate limit window in seconds (default: 60) |
 
 ---
 
@@ -163,7 +170,7 @@ curl -X POST http://localhost:8000/analyze \
 ```
 backend/
 ├── app/
-│   ├── main.py              # FastAPI app + /analyze endpoint
+│   ├── main.py              # FastAPI app + /analyze endpoint + auth + rate limiting
 │   ├── config.py            # Environment settings (reads .env)
 │   ├── schemas.py           # Request/response data models
 │   ├── analyzers/
@@ -171,23 +178,24 @@ backend/
 │   │   ├── authentication.py
 │   │   ├── domain_reputation.py
 │   │   ├── intent.py
-│   │   ├── url_analysis.py
+│   │   ├── url_analysis.py  # Includes URL unshortening
 │   │   ├── ai_content.py
 │   │   └── attachment.py
 │   ├── scoring/
 │   │   └── scorer.py        # Runs analyzers in parallel, computes weighted score
 │   └── services/
-│       └── http_client.py   # Shared HTTP client with connection pooling
-└── requirements.txt
+│       └── http_client.py   # Shared async HTTP client with connection pooling
+├── tests/                   # Unit + integration tests (pytest)
+├── .env.example             # Template for environment variables
+└── requirements.txt         # Pinned dependencies
 ```
 
 ---
 
 ## What I Would Add With More Time
 
-- **Rate limiting** on the `/analyze` endpoint to prevent abuse
 - **Caching layer** for VirusTotal/WHOIS responses (avoid redundant calls for the same domain within a time window)
-- **URL unshortening** — resolve bit.ly/tinyurl links before analysis
 - **Sender display-name vs. actual address mismatch detection**
-- **Unit and integration tests** with mocked external APIs
 - **Confidence intervals** instead of a single score — communicate uncertainty to the user
+- **Persistent rate limiting** (Redis-backed) for multi-instance deployments
+- **Webhook support** for async analysis of large batches

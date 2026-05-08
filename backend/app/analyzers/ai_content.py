@@ -44,11 +44,12 @@ class AiContentAnalyzer(BaseAnalyzer):
         result = AnalysisResult(analyzer_name=self.name, max_score=80)
 
         if not settings.gemini_api_key:
+            result.skipped = True
             result.findings.append("AI analysis skipped: No Gemini API key configured.")
             return result
 
         try:
-            # Initialize Gemini client
+            # Initialize Gemini client (async)
             client = Client(api_key=settings.gemini_api_key)
 
             # Truncate body to avoid excessive token usage
@@ -62,12 +63,12 @@ class AiContentAnalyzer(BaseAnalyzer):
 
             prompt = f"{SYSTEM_PROMPT}\n\nEmail to analyze:\n{user_message}"
 
-            # Call Gemini API
-            response = client.models.generate_content(
+            # Call Gemini API asynchronously to avoid blocking the event loop
+            response = await client.aio.models.generate_content(
                 model="models/gemini-2.0-flash",
                 contents=prompt
             )
-            
+
             content = response.text.strip() if hasattr(response, 'text') else str(response).strip()
             parsed = self._parse_response(content)
 
@@ -101,12 +102,25 @@ class AiContentAnalyzer(BaseAnalyzer):
 
     @staticmethod
     def _parse_response(content: str) -> dict | None:
-        """Safely parse LLM JSON response."""
+        """Safely parse and validate LLM JSON response."""
         try:
             # Strip markdown code fences if present
             if content.startswith("```"):
                 content = content.split("\n", 1)[1]
                 content = content.rsplit("```", 1)[0]
-            return json.loads(content)
+            data = json.loads(content)
+
+            # Validate risk_score is an integer in range
+            risk_score = data.get("risk_score")
+            if not isinstance(risk_score, int):
+                return None
+            data["risk_score"] = max(0, min(100, risk_score))
+
+            # Validate flags is a list of strings (or absent)
+            flags = data.get("flags")
+            if flags is not None and not isinstance(flags, list):
+                data["flags"] = []
+
+            return data
         except (json.JSONDecodeError, IndexError):
             return None

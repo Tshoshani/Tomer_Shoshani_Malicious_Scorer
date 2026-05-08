@@ -16,6 +16,7 @@ class DomainReputationAnalyzer(BaseAnalyzer):
         result = AnalysisResult(analyzer_name=self.name, max_score=100)
 
         if not settings.vt_api_key:
+            result.skipped = True
             result.findings.append("VirusTotal check skipped: No API key configured.")
             return result
 

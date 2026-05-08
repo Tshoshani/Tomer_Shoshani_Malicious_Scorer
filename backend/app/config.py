@@ -1,12 +1,22 @@
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import Optional
 
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     # API Keys
     vt_api_key: Optional[str] = None
     whois_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
+
+    # Backend authentication (shared secret with Gmail Add-on)
+    api_secret_key: Optional[str] = None
+
+    # Rate limiting
+    rate_limit_requests: int = 10
+    rate_limit_window_seconds: int = 60
 
     # Scoring weights (per analyzer max contribution)
     weight_authentication: int = 100
@@ -22,10 +32,6 @@ class Settings(BaseSettings):
 
     # HTTP settings
     http_timeout: float = 15.0
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 settings = Settings()
