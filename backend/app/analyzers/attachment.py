@@ -1,13 +1,18 @@
-import logging
+"""
+Analyzes email attachments using two signals:
+  1. File extension risk tier — executables (.exe, .bat) score highest,
+     macro-enabled Office docs and archives score medium.
+  2. VirusTotal hash reputation — the SHA-256 hash (computed by the Gmail
+     Add-on) is looked up. The backend never receives raw file bytes,
+     reducing attack surface.
+"""
 
-from app.analyzers.base import AnalysisResult, BaseAnalyzer
+from app.analyzers.base_analyzer_definitions import AnalysisResult, BaseAnalyzer
 from app.config import settings
 from app.schemas import EmailAnalysisRequest
 from app.services.http_client import get_http_client
 
-logger = logging.getLogger(__name__)
-
-# Risk tiers by file extension
+# Extension risk tiers — files that can directly execute code score highest
 HIGH_RISK_EXTENSIONS = {
     ".exe", ".scr", ".bat", ".cmd", ".com", ".msi", ".ps1", ".vbs",
     ".js", ".jse", ".wsf", ".wsh", ".pif", ".hta", ".cpl", ".reg",
@@ -15,10 +20,10 @@ HIGH_RISK_EXTENSIONS = {
 }
 
 MEDIUM_RISK_EXTENSIONS = {
-    ".docm", ".xlsm", ".pptm",  # Macro-enabled Office
+    ".docm", ".xlsm", ".pptm",  # Macro-enabled Office (can run VBA code)
     ".zip", ".rar", ".7z", ".tar", ".gz",  # Archives (can hide payloads)
     ".pdf", ".rtf",  # Known exploit vectors
-    ".lnk", ".url",  # Shortcut files
+    ".lnk", ".url",  # Shortcut files (can point to malicious targets)
 }
 
 
@@ -37,7 +42,7 @@ class AttachmentAnalyzer(BaseAnalyzer):
         hash_score = 0
 
         for attachment in email.attachments:
-            # 1. Extension-based risk
+            # Signal 1: Extension-based risk scoring
             ext = self._get_extension(attachment.filename)
             if ext in HIGH_RISK_EXTENSIONS:
                 extension_score = max(extension_score, 50)
@@ -50,7 +55,7 @@ class AttachmentAnalyzer(BaseAnalyzer):
                     f"Medium-risk file type: '{attachment.filename}' ({ext})"
                 )
 
-            # 2. Hash reputation via VirusTotal
+            # Signal 2: Check file hash against VirusTotal's database
             if settings.vt_api_key and attachment.sha256:
                 vt_score = await self._check_hash_reputation(attachment.sha256)
                 if vt_score > 0:
@@ -59,22 +64,21 @@ class AttachmentAnalyzer(BaseAnalyzer):
                         f"VirusTotal flagged '{attachment.filename}' as malicious."
                     )
                 elif vt_score == 0:
+                    # Hash not in VT database — unknown file, warrants caution
                     result.findings.append(
                         f"'{attachment.filename}' hash not found in VirusTotal — "
                         f"exercise caution with unknown files."
                     )
                 # vt_score == -1 means clean
 
+        # Combine both signals, capped at max_score
         result.score = min(extension_score + hash_score, result.max_score)
         return result
 
     async def _check_hash_reputation(self, sha256: str) -> int:
         """
-        Query VirusTotal for file hash.
-        Returns:
-            positive score if malicious,
-            0 if not found,
-            -1 if clean
+        Look up a file hash on VirusTotal.
+        Returns: positive score if malicious, 0 if unknown, -1 if clean.
         """
         client = await get_http_client()
         url = f"https://www.virustotal.com/api/v3/files/{sha256}"
@@ -96,8 +100,8 @@ class AttachmentAnalyzer(BaseAnalyzer):
             elif response.status_code == 404:
                 return 0  # Hash not in database
 
-        except Exception as e:
-            logger.warning(f"VT hash check failed: {type(e).__name__}")
+        except Exception:
+            pass  # Network error — treat as unknown
 
         return 0
 

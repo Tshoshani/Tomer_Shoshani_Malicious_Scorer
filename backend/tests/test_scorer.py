@@ -1,7 +1,7 @@
 """Unit tests for the Scorer orchestrator."""
 
 import pytest
-from app.analyzers.base import AnalysisResult, BaseAnalyzer
+from app.analyzers.base_analyzer_definitions import AnalysisResult, BaseAnalyzer
 from app.schemas import EmailAnalysisRequest
 from app.scoring.scorer import Scorer
 

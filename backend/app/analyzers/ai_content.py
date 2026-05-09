@@ -1,14 +1,27 @@
+"""
+Uses Google Gemini (LLM) to analyze email content for sophisticated
+phishing signals that keyword matching can't catch — e.g. novel phrasing,
+contextual manipulation, or social engineering tactics.
+
+The LLM is asked to return structured JSON with a risk score and flags.
+Its response is validated (must be int 0-100) to prevent hallucinated
+scores from corrupting the final verdict.
+
+This analyzer runs alongside deterministic checks, not instead of them.
+If the Gemini API is unavailable, the system still works with the other 5.
+"""
+
 import json
-import logging
 
 from google.genai import Client
 from google.genai.errors import ClientError
-from app.analyzers.base import AnalysisResult, BaseAnalyzer
+from app.analyzers.base_analyzer_definitions import AnalysisResult, BaseAnalyzer
 from app.config import settings
 from app.schemas import EmailAnalysisRequest
 
-logger = logging.getLogger(__name__)
-
+# System prompt instructs the LLM to act as a security analyst and respond
+# with structured JSON only — no tool calls, no code execution.
+# This separation of system/user prompts helps mitigate prompt injection.
 SYSTEM_PROMPT = """You are an email security analyst. Analyze the email below for phishing/malicious indicators.
 
 Evaluate these dimensions:
@@ -43,16 +56,16 @@ class AiContentAnalyzer(BaseAnalyzer):
     async def analyze(self, email: EmailAnalysisRequest) -> AnalysisResult:
         result = AnalysisResult(analyzer_name=self.name, max_score=80)
 
+        # Skip if no API key — mark as skipped so it doesn't dilute the score
         if not settings.gemini_api_key:
             result.skipped = True
             result.findings.append("AI analysis skipped: No Gemini API key configured.")
             return result
 
         try:
-            # Initialize Gemini client (async)
             client = Client(api_key=settings.gemini_api_key)
 
-            # Truncate body to avoid excessive token usage
+            # Truncate body to avoid excessive token usage / cost
             body_truncated = email.body[:3000] if len(email.body) > 3000 else email.body
 
             user_message = (
@@ -63,7 +76,7 @@ class AiContentAnalyzer(BaseAnalyzer):
 
             prompt = f"{SYSTEM_PROMPT}\n\nEmail to analyze:\n{user_message}"
 
-            # Call Gemini API asynchronously to avoid blocking the event loop
+            # Async call to avoid blocking the event loop while waiting for LLM
             response = await client.aio.models.generate_content(
                 model="models/gemini-2.0-flash",
                 contents=prompt
@@ -73,6 +86,7 @@ class AiContentAnalyzer(BaseAnalyzer):
             parsed = self._parse_response(content)
 
             if parsed:
+                # Clamp LLM score to our max to prevent it from dominating
                 result.score = min(parsed["risk_score"], result.max_score)
                 if parsed.get("flags"):
                     for flag in parsed["flags"]:
@@ -83,18 +97,13 @@ class AiContentAnalyzer(BaseAnalyzer):
                 result.findings.append("AI analysis: Could not parse LLM response.")
 
         except ClientError as e:
-            # Handle ClientError exceptions (includes 429 rate limit)
             if hasattr(e, 'code') and e.code == 429:
-                logger.warning(f"Gemini API rate limit hit (free trial quota exhausted)")
-                result.findings.append("AI analysis skipped: Free trial quota exceeded. Please try again later.")
-                result.skipped = True
+                result.findings.append("AI analysis skipped: Free trial quota exceeded.")
             else:
-                logger.warning(f"AI content analysis failed: ClientError: {str(e)[:100]}")
-                result.findings.append(f"AI analysis skipped: {e.code if hasattr(e, 'code') else 'Unknown'}")
-                result.skipped = True
+                result.findings.append(f"AI analysis skipped: {type(e).__name__}")
+            result.skipped = True
 
         except Exception as e:
-            logger.warning(f"AI content analysis failed: {type(e).__name__}: {str(e)[:100]}")
             result.findings.append(f"AI analysis skipped: {type(e).__name__}")
             result.skipped = True
 

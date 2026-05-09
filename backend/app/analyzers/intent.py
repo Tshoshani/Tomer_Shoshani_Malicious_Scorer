@@ -1,7 +1,18 @@
-from app.analyzers.base import AnalysisResult, BaseAnalyzer
+"""
+Detects phishing intent by matching known phishing phrases in the email
+subject and body. Phrases are organized into categories, each with a
+different weight. High-risk combos and urgency/pressure tactics carry
+more weight (30) than general patterns (15).
+
+Max score is capped at 75 so keyword matches alone can't push the
+verdict to "Malicious" without other analyzers also flagging the email.
+"""
+
+from app.analyzers.base_analyzer_definitions import AnalysisResult, BaseAnalyzer
 from app.schemas import EmailAnalysisRequest
 
 
+# Each category contains phrases commonly found in phishing emails
 PHISHING_CATEGORIES = {
     "Urgency/Pressure": [
         "urgent", "immediate action required", "act now", "expires today",
@@ -37,11 +48,12 @@ PHISHING_CATEGORIES = {
     ],
 }
 
+# Categories that are especially dangerous get higher weights
 CATEGORY_WEIGHTS = {
     "High-Risk Combos": 30,
     "Urgency/Pressure": 30,
 }
-DEFAULT_CATEGORY_WEIGHT = 15
+DEFAULT_CATEGORY_WEIGHT = 15  # All other categories
 
 
 class IntentAnalyzer(BaseAnalyzer):
@@ -53,6 +65,7 @@ class IntentAnalyzer(BaseAnalyzer):
         result = AnalysisResult(analyzer_name=self.name, max_score=75)
         content = (email.subject + " " + email.body).lower()
 
+        # Check each category's phrases against the email content
         for category, phrases in PHISHING_CATEGORIES.items():
             found = [p for p in phrases if p in content]
             if found:

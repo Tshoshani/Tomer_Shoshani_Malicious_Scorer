@@ -87,8 +87,6 @@ Sandboxing (detonating attachments) is out of scope for this project. Instead, w
 ## Security Considerations
 
 - **Input validation**: Pydantic enforces field types, max lengths (subject: 1000 chars, body: 100KB), email format validation (`EmailStr`), and required fields. Malformed requests are rejected before reaching any analyzer.
-- **API authentication**: The `/analyze` endpoint supports an `X-API-Key` header. When `API_SECRET_KEY` is configured, only requests with the matching key are accepted.
-- **Rate limiting**: Built-in sliding-window rate limiter (default: 10 requests/minute per IP) prevents abuse and protects downstream API quotas.
 - **No secrets in client code**: All API keys live in the backend's `.env` file. The Gmail Add-on has no access to them.
 - **Untrusted input handling**: Email bodies are treated as untrusted. No `eval()`, no template rendering, no shell execution on user-supplied content.
 - **LLM prompt injection mitigation**: The AI analyzer sends email content as a user message, separated from the system prompt. The system prompt requests only structured JSON output — no tool calls or code execution. Response is validated (must be int 0-100) before use.
@@ -141,7 +139,6 @@ Copy the ngrok HTTPS URL and set it as `BACKEND_URL` in the Google Apps Script.
 ```bash
 curl -X POST http://localhost:8000/analyze \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-secret-key" \
   -d '{
     "subject": "URGENT: Verify your account now",
     "sender_email": "security@g00gle-alerts.xyz",
@@ -159,9 +156,6 @@ curl -X POST http://localhost:8000/analyze \
 | `VT_API_KEY` | No | VirusTotal API key |
 | `GEMINI_API_KEY` | No | Google Gemini API key for AI content analysis |
 | `WHOIS_API_KEY` | No | WhoisXMLAPI key (fallback for domain age) |
-| `API_SECRET_KEY` | No | Shared secret for `X-API-Key` authentication |
-| `RATE_LIMIT_REQUESTS` | No | Max requests per window (default: 10) |
-| `RATE_LIMIT_WINDOW_SECONDS` | No | Rate limit window in seconds (default: 60) |
 
 ---
 
@@ -170,11 +164,11 @@ curl -X POST http://localhost:8000/analyze \
 ```
 backend/
 ├── app/
-│   ├── main.py              # FastAPI app + /analyze endpoint + auth + rate limiting
+│   ├── main.py              # FastAPI app + /analyze endpoint
 │   ├── config.py            # Environment settings (reads .env)
 │   ├── schemas.py           # Request/response data models
 │   ├── analyzers/
-│   │   ├── base.py          # BaseAnalyzer interface + AnalysisResult
+│   │   ├── base_analyzer_definitions.py  # BaseAnalyzer interface + AnalysisResult
 │   │   ├── authentication.py
 │   │   ├── domain_reputation.py
 │   │   ├── intent.py
@@ -189,13 +183,3 @@ backend/
 ├── .env.example             # Template for environment variables
 └── requirements.txt         # Pinned dependencies
 ```
-
----
-
-## What I Would Add With More Time
-
-- **Caching layer** for VirusTotal/WHOIS responses (avoid redundant calls for the same domain within a time window)
-- **Sender display-name vs. actual address mismatch detection**
-- **Confidence intervals** instead of a single score — communicate uncertainty to the user
-- **Persistent rate limiting** (Redis-backed) for multi-instance deployments
-- **Webhook support** for async analysis of large batches
